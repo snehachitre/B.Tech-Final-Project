@@ -1,0 +1,7 @@
+ABSTRACT
+	
+GNUKhata is a Free Accounting and Inventory Software which can be deployed by both profit making and non-profit making organisations. GNUKhata web application is being developed and we are supposed to perform Unit Testing of the Application Programming Interface of the same. The Developers will be provided with Automated Unit Testing Framework to run the tests. It will help them improve their product’s quality.
+	We are the Testing Team of GNUKhata Web Application. It is our project to perform Unit Testing and write Test Cases for this application and detect the bugs and errors. Automated Unit Testing Framework will also be designed for Developers to run the tests. It will help Developers to make their product stable.
+	Our project’s goal is to make GNUKhata Web Application stable and bug free so that during deploy process the application will be error free. It can be done by pragmatic thinking and finding out errors and bugs. That means GNUKhata Web Application will be ready to be deployed after our testing is done.
+	 
+
