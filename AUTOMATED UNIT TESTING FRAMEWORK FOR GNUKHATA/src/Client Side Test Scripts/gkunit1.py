@@ -1,0 +1,478 @@
+#!/usr/bin/env python
+
+import unittest
+import sys
+import Tkinter
+import tkMessageBox
+import traceback
+from Tkinter import *
+from tkFileDialog import askopenfilename
+from os.path import basename
+
+#msgbox("Hello, world!")
+
+import os    
+
+import string
+tk = Tkinter # Alternative to the messy 'from Tkinter import *' often seen
+
+
+##############################################################################
+# GUI framework classes
+##############################################################################
+
+class BaseGUITestRunner:
+    
+    def __init__(self, *args, **kwargs):
+        self.currentResult = None
+        self.running = 0
+        self.__rollbackImporter = None
+        apply(self.initGUI, args, kwargs)
+
+    def getSelectedTestName(self):
+        "Override to return the name of the test selected to be run"
+        pass
+
+    def errorDialog(self, title, message):
+        "Override to display an error arising from GUI usage"
+        pass
+
+    def runClicked(self):
+        "To be called in response to user choosing to run a test"
+        if self.running: return
+        testName = self.getSelectedTestName()
+        if not testName:
+            self.errorDialog("Test name entry", "You must enter a test name")
+            return
+        if self.__rollbackImporter:
+            self.__rollbackImporter.rollbackImports()
+            self.__rollbackImporter = RollbackImporter()
+        try:
+            test = unittest.defaultTestLoader.loadTestsFromName(testName)
+        except:
+            exc_type, exc_value, exc_tb = sys.exc_info()
+            apply(traceback.print_exception,sys.exc_info())
+            self.errorDialog("Unable to run test '%s'" % testName,
+                             "Error loading specified test: %s, %s" % \
+                             (exc_type, exc_value))
+            return
+        self.currentResult = GUITestResult(self)
+        self.totalTests = test.countTestCases()
+        self.running = 1
+        self.notifyRunning()
+        test.run(self.currentResult)
+        self.running = 0
+        self.notifyStopped()
+
+    def stopClicked(self):
+        "To be called in response to user stopping the running of a test"
+        if self.currentResult:
+            self.currentResult.stop()
+
+    # Required callbacks
+
+    def notifyRunning(self):
+        "Override to set GUI in 'running' mode, enabling 'stop' button etc."
+        pass
+
+    def notifyStopped(self):
+        "Override to set GUI in 'stopped' mode, enabling 'run' button etc."
+        pass
+
+    def notifyTestFailed(self, test, err):
+        "Override to indicate that a test has just failed"
+        pass
+
+    def notifyTestErrored(self, test, err):
+        "Override to indicate that a test has just errored"
+        pass
+
+    def notifyTestStarted(self, test):
+        "Override to indicate that a test is about to run"
+        pass
+
+    def notifyTestFinished(self, test):
+        """Override to indicate that a test has finished (it may already have
+           failed or errored)"""
+        pass
+
+
+class GUITestResult(unittest.TestResult):
+    """A TestResult that makes callbacks to its associated GUI TestRunner.
+    Used by BaseGUITestRunner. Need not be created directly.
+    """
+    def __init__(self, callback):
+          unittest.TestResult.__init__(self)
+          self.callback = callback
+
+    def addError(self, test, err):
+          unittest.TestResult.addError(self, test, err)
+          self.callback.notifyTestErrored(test, err)
+          
+    def addSuccess(self,test):
+          unittest.TestResult.addSuccess(self, test)
+          self.callback.notifyTestPassed(test)
+
+    def addFailure(self, test, err):
+          unittest.TestResult.addFailure(self, test, err)
+          self.callback.notifyTestFailed(test, err)
+
+    def stopTest(self, test):
+          unittest.TestResult.stopTest(self, test)
+          self.callback.notifyTestFinished(test)
+
+    def startTest(self, test):
+          unittest.TestResult.startTest(self, test)
+          self.callback.notifyTestStarted(test)
+
+
+class RollbackImporter:
+    """This tricky little class is used to make sure that modules under test
+    will be read the next time they are imported.
+    """
+    def __init__(self):
+         self.previousModules = sys.modules.copy()
+        
+    def rollbackImports(self):
+         for modname in sys.modules.keys():
+            if not self.previousModules.has_key(modname):
+                # Force reload when modname next imported
+                del(sys.modules[modname])
+
+
+##############################################################################
+# Tkinter GUI
+##############################################################################
+
+_ABOUT_TEXT="""\
+gkUnit unit testing framework.
+
+"""
+_HELP_TEXT="""\
+Select the name of a callable object which, when called, will return a \
+TestCase or TestSuite. Click 'Browse', and the test thus produced will be run.
+
+Double click on an error in the listbox to see more information about it,\
+including the stack trace.
+
+For more information, visit
+http://gnukhata.gnulinux.in/
+"""
+
+class TkTestRunner(BaseGUITestRunner):
+    """An implementation of BaseGUITestRunner using Tkinter.
+    """
+    def initGUI(self, root, initialTestName):
+        """Set up the GUI inside the given root window. The test name entry
+        field will be pre-filled with the given initialTestName.
+        """
+        self.root = root
+        # Set up values that will be tied to widgets
+        self.fileName=tk.StringVar()
+        self.suiteNameVar = tk.StringVar()
+        self.suiteNameVar=self.fileName
+        # self.suiteNameVar.set(initialTestName)
+        self.statusVar = tk.StringVar()
+        self.statusVar.set("Idle")
+        self.runCountVar = tk.IntVar()
+        self.passCountVar = tk.IntVar()
+        self.failCountVar = tk.IntVar()
+        self.errorCountVar = tk.IntVar()
+        self.remainingCountVar = tk.IntVar()
+        self.top = tk.Frame()
+        self.top.pack(fill=tk.BOTH, expand=1)
+        self.createWidgets()
+
+    def createWidgets(self):
+        """Creates and packs the various widgets.
+        
+        Why is it that GUI code always ends up looking a mess, despite all the
+        best intentions to keep it tidy? Answers on a postcard, please.
+        """
+        # Status bar
+        statusFrame = tk.Frame(self.top, relief=tk.SUNKEN, borderwidth=2)
+        statusFrame.pack(anchor=tk.SW, fill=tk.X, side=tk.BOTTOM)
+        tk.Label(statusFrame, textvariable=self.statusVar).pack(side=tk.LEFT)
+
+  #  Area to enter name of test to run 
+
+        leftFrame = tk.Frame(self.top, borderwidth=4)
+        leftFrame.pack(fill=tk.BOTH, side=tk.LEFT, anchor=tk.NW, expand=1)
+        suiteNameFrame = tk.Frame(leftFrame, borderwidth=4)
+        suiteNameFrame.pack(fill=tk.X)
+        #tk.Label(suiteNameFrame, text="Enter test name:").pack(side=tk.LEFT)
+     
+                  
+        tk.Label(suiteNameFrame, text="Select Test to Run").pack(side=tk.LEFT, fill=tk.X, expand=1)
+    
+
+  # Progress bar
+        progressFrame = tk.Frame(leftFrame, relief=tk.GROOVE, borderwidth=2)
+        progressFrame.pack(fill=tk.X, expand=0, anchor=tk.NW)
+        tk.Label(progressFrame, text="Progress:").pack(anchor=tk.W)
+        self.progressBar = ProgressBar(progressFrame, relief=tk.SUNKEN,borderwidth=2)
+        self.progressBar.pack(fill=tk.X, expand=1)
+
+  # Area with buttons to start/stop tests and quit
+  
+  	
+  	startFrame = tk.Frame(self.top, borderwidth=4)
+        startFrame.pack(side=tk.LEFT, anchor=tk.NW, fill=tk.Y)
+        self.stopGoButton = tk.Button(startFrame, text="Browse",
+                                      command=self.runClicked)
+        self.stopGoButton.pack(fill=tk.X)
+        
+        buttonFrame = tk.Frame(leftFrame,relief=tk.SUNKEN)
+  	buttonFrame.pack(anchor=tk.NW, fill=tk.Y,expand=1)
+        tk.Button(buttonFrame, text="Report",
+                  command=self.showReportDialog).pack(side=tk.LEFT, fill=tk.X,expand=1,anchor=tk.W)
+              
+        tk.Button(buttonFrame, text="Close",
+                  command=self.top.quit).pack(side=tk.RIGHT, fill=tk.X,expand=1,anchor=tk.W)
+        
+        tk.Button(buttonFrame, text="About",
+                  command=self.showAboutDialog).pack(side=tk.RIGHT, fill=tk.X,expand=1,anchor=tk.W)
+        tk.Button(buttonFrame, text="Help",
+                  command=self.showHelpDialog).pack(side=tk.RIGHT, fill=tk.X,expand=1,anchor=tk.W)
+                  
+                
+  # Area with labels reporting results
+        for label, var in (('Run:', self.runCountVar),
+        		   ('Passed:',self.passCountVar),
+                           ('Failures:', self.failCountVar),
+                           ('Errors:', self.errorCountVar),
+                           ('Remaining:', self.remainingCountVar)):
+            tk.Label(progressFrame, text=label).pack(side=tk.LEFT)
+            tk.Label(progressFrame, textvariable=var,
+                     foreground="blue").pack(side=tk.LEFT, fill=tk.X,
+                                             expand=1, anchor=tk.W)
+
+        # List box showing errors and failures
+        tk.Label(leftFrame, text="Failures and errors:").pack(anchor=tk.W)
+        listFrame = tk.Frame(leftFrame, relief=tk.SUNKEN, borderwidth=2)
+        listFrame.pack(fill=tk.BOTH, anchor=tk.NW, expand=1)
+        self.errorListbox = tk.Listbox(listFrame, foreground='red',
+                                       selectmode=tk.SINGLE,
+                                       selectborderwidth=0)
+        self.errorListbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=1,
+                               anchor=tk.NW)
+        listScroll = tk.Scrollbar(listFrame, command=self.errorListbox.yview)
+        listScroll.pack(side=tk.LEFT, fill=tk.Y, anchor=tk.N)
+        self.errorListbox.bind("<Double-1>",
+                               lambda e, self=self: self.showSelectedError())
+        self.errorListbox.configure(yscrollcommand=listScroll.set)
+
+
+    def getSelectedTestName(self):
+        
+        self.fileName=self.showBrowseDialog()
+        self.fileName=os.path.splitext(os.path.basename(self.fileName))[0]
+        return self.fileName
+        
+        
+    def errorDialog(self, title, message):
+        tkMessageBox.showerror(parent=self.root, title=title,
+                               message=message)
+
+    def notifyRunning(self):
+        self.runCountVar.set(0)
+        self.passCountVar.set(0)
+        self.failCountVar.set(0)
+        self.errorCountVar.set(0)
+        self.remainingCountVar.set(self.totalTests)
+        self.errorInfo = []
+        while self.errorListbox.size():
+            self.errorListbox.delete(0)
+        #Stopping seems not to work, so simply disable the start button
+        #self.stopGoButton.config(command=self.stopClicked, text="Stop")
+        self.stopGoButton.config(state=tk.DISABLED)
+        self.progressBar.setProgressFraction(0.0)
+        self.top.update_idletasks()
+
+    def notifyStopped(self):
+        self.stopGoButton.config(state=tk.ACTIVE)
+        #self.stopGoButton.config(command=self.runClicked, text="Start")
+        self.statusVar.set("Idle")
+
+    def notifyTestStarted(self, test):
+        self.statusVar.set(str(test))
+        self.top.update_idletasks()
+        
+    def notifyTestPassed(self,test):
+	self.passCountVar.set(1+self.runCountVar.get() - (self.failCountVar.get()+self.errorCountVar.get()))
+        
+    def notifyTestFailed(self, test, err):
+        self.failCountVar.set(1 + self.failCountVar.get())
+        self.errorListbox.insert(tk.END, "Failure: %s" % test)
+        self.errorInfo.append((test,err))
+
+    def notifyTestErrored(self, test, err):
+        self.errorCountVar.set(1 + self.errorCountVar.get())
+        self.errorListbox.insert(tk.END, "Error: %s" % test)
+        self.errorInfo.append((test,err))
+
+    def notifyTestFinished(self, test):
+        self.remainingCountVar.set(self.remainingCountVar.get() - 1)
+        self.runCountVar.set(1 + self.runCountVar.get())
+        fractionDone = float(self.runCountVar.get())/float(self.totalTests)
+        fillColor = len(self.errorInfo) and "red" or "green"
+        self.progressBar.setProgressFraction(fractionDone, fillColor)
+
+    def showAboutDialog(self):
+        tkMessageBox.showinfo(parent=self.root, title="About gkUnit",
+                              message=_ABOUT_TEXT)
+
+    def showHelpDialog(self):
+        tkMessageBox.showinfo(parent=self.root, title="gkUnit help",
+                              message=_HELP_TEXT)
+                              
+                     
+    def showReportDialog(self):
+        import tkMessageBox
+	import Pmw
+	import string
+	class Shell:
+		def __init__(self, title=''):
+			self.root = Tk()
+			Pmw.initialise(self.root)
+			self.root.title(title)
+		
+		def win(self, master):
+			Label(master, text='From:').grid(row=0, sticky=W)
+			Label(master, text='To:').grid(row=1, sticky=W)
+			Label(master, text='Password:').grid(row=2,sticky=W)
+			Label(master, text='Message:').grid(row=3,sticky=W)
+		
+			self.fromaddress = Entry(master, width = 30)
+			self.toaddress = Entry(master, width = 30)
+			self.password= Entry(master, width = 15, show='*')
+			self.password.pack(fill=BOTH, expand=1, padx = 10)
+		
+			self.userInfo = Pmw.ScrolledText(master,borderframe=1,labelpos=N,usehullsize=1,hull_width=270,hull_height=100,text_padx=10,text_pady=10,text_wrap=NONE)
+			self.userInfo.configure(text_font = ('verdana', 8))
+			self.userInfo.pack(fill=BOTH, expand=1)
+			Button(master, text="Send", command= self.send).grid(row=4,column=1, sticky=W)
+			self.fromaddress.grid(row=0, column=1, sticky=W)
+		
+			self.toaddress.grid(row=1, column=1, sticky=W)
+		
+			self.userInfo.grid(row=3, column=1, sticky=W)
+			self.password.grid(row=2,column=1, sticky=W)
+		
+		
+		def send(self):
+			import smtplib 
+			
+			if self.fromaddress.get().strip() == "":
+				tkMessageBox.showerror ("Error","Enter sender's email address")
+			self.fromaddrs=self.fromaddress.get().strip()
+			if self.toaddress.get().strip() == "":
+				tkMessageBox.showerror ("Error","Enter receiver's email address")
+			self.toaddrs=self.toaddress.get().strip()
+			if self.password.get().strip() == "":
+				tkMessageBox.showerror ("Error","Enter password")
+			self.password1=self.password.get().strip()
+			if self.userInfo.get().strip() == "":
+				tkMessageBox.showerror ("Error","Enter some message")
+			msg=self.userInfo.get().strip()
+			
+			server = smtplib.SMTP("smtp.gmail.com", 587)
+			server.ehlo('x')
+			server.starttls()
+			server.ehlo('x')
+			server.login( self.fromaddrs,self.password1)
+			try:
+				server.sendmail(self.fromaddrs,self.toaddrs,  msg)
+				tkMessageBox.showinfo ("Mail","Mail sent successfully!")
+			except Error:
+				tkMessageBox.showerror ("Mail","Unable to send mail")
+		
+	if __name__ == '__main__':
+		shell=Shell(title='Report')
+		shell.root.geometry("%dx%d" % (400,350))
+		shell.win(shell.root)
+		shell.root.mainloop()
+                                       
+    def showBrowseDialog(self):
+         
+        self.fileName = askopenfilename(filetypes=[("allfiles","*.*"),("pythonfiles","*.py")])
+        return self.fileName
+     
+    def showSelectedError(self):
+        selection = self.errorListbox.curselection()
+        if not selection: return
+        selected = int(selection[0])
+        txt = self.errorListbox.get(selected)
+        window = tk.Toplevel(self.root)
+        window.title(txt)
+        window.protocol('WM_DELETE_WINDOW', window.quit)
+        test, error = self.errorInfo[selected]
+        tk.Label(window, text=str(test),
+                 foreground="red", justify=tk.LEFT).pack(anchor=tk.W)
+        tracebackLines = apply(traceback.format_exception, error + (10,))
+        tracebackText = string.join(tracebackLines,'')
+        tk.Label(window, text=tracebackText, justify=tk.LEFT).pack()
+        tk.Button(window, text="Close",
+                  command=window.quit).pack(side=tk.BOTTOM)
+        window.bind('<Key-Return>', lambda e, w=window: w.quit())
+        window.mainloop()
+        window.destroy()
+
+
+class ProgressBar(tk.Frame):
+    """A simple progress bar that shows a percentage progress in
+    the given colour."""
+
+    def __init__(self, *args, **kwargs):
+        apply(tk.Frame.__init__, (self,) + args, kwargs)
+        self.canvas = tk.Canvas(self, height='20', width='60',
+                                background='white', borderwidth=3)
+        self.canvas.pack(fill=tk.X, expand=1)
+        self.rect = self.text = None
+        self.canvas.bind('<Configure>', self.paint)
+        self.setProgressFraction(0.0)
+
+    def setProgressFraction(self, fraction, color='blue'):
+        self.fraction = fraction
+        self.color = color
+        self.paint()
+        self.canvas.update_idletasks()
+        
+    def paint(self, *args):
+        totalWidth = self.canvas.winfo_width()
+        width = int(self.fraction * float(totalWidth))
+        height = self.canvas.winfo_height()
+        if self.rect is not None: self.canvas.delete(self.rect)
+        if self.text is not None: self.canvas.delete(self.text)
+        self.rect = self.canvas.create_rectangle(0, 0, width, height,
+                                                 fill=self.color)
+        percentString = "%3.0f%%" % (100.0 * self.fraction)
+        self.text = self.canvas.create_text(totalWidth/2, height/2,
+                                            anchor=tk.CENTER,
+                                            text=percentString)
+                                            
+     
+
+def main(initialTestName=""):
+    #import midsplash
+    root = tk.Tk()
+    root.title("gkUnit")
+    root.geometry("800x800")
+    runner = TkTestRunner(root, initialTestName)
+    root.protocol('WM_DELETE_WINDOW', root.quit)
+    root.after(0,center,root) 
+    root.mainloop()
+   
+
+def center(window):
+      window.geometry("+%d+%d" % (350, 200))
+      window.deiconify() 
+      
+
+
+if __name__ == '__main__':
+    import sys
+    if len(sys.argv) == 2:
+        main(sys.argv[1])
+    else:
+        main()
